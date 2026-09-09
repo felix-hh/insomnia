@@ -63,6 +63,12 @@ parse_duration() {
   echo "$secs"
 }
 
+is_watchdog() {
+  local pid=$1
+  [[ -n "$pid" ]] || return 1
+  ps -p "$pid" -o command= 2>/dev/null | grep -q "$WATCHDOG_TAG"
+}
+
 status() {
   local disabled
   disabled=$($PMSET -g | awk '/SleepDisabled/ {print $2}')
@@ -74,7 +80,10 @@ status() {
     local pid deadline left
     read -r pid deadline < "$STATE" || true
     left=$((deadline - $(now)))
-    if kill -0 "$pid" 2>/dev/null && ((left > 0)); then
+    # `kill -0` alone is not enough: state survives reboots, pids restart low and get
+    # reused, so a stale pid can land on an unrelated live process. Check it really is
+    # a watchdog before reporting a countdown nobody is running.
+    if is_watchdog "$pid" && ((left > 0)); then
       echo "sleep: DISABLED, $(fmt_duration "$left") left (until $(date -r "$deadline" '+%a %H:%M')), watchdog pid $pid"
       return 0
     fi
@@ -87,7 +96,11 @@ kill_watchdog() {
   if [[ -s "$STATE" ]]; then
     local pid _rest
     read -r pid _rest < "$STATE" || true
-    [[ -n "${pid:-}" ]] && kill "$pid" 2>/dev/null || true
+    # Only ever kill a verified watchdog: a stale pid from before a reboot may belong
+    # to something else entirely by now.
+    if is_watchdog "${pid:-}"; then
+      kill "$pid" 2>/dev/null || true
+    fi
   fi
   # Also sweep by signature: a watchdog whose state write failed is an orphan that
   # the recorded pid cannot reach, and it would re-enable sleep at its own deadline.

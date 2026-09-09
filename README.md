@@ -106,8 +106,13 @@ root shell (`sudo -i`): it calls `pmset` directly when it is already root.
 
 - **Reboot.** `disablesleep` is persistent power-management state; the watchdog is only a
   process. Reboot mid-window and sleep stays disabled with nothing left to re-enable it.
-  `insomnia status` reports `DISABLED with no live watchdog` when it sees this. A
-  LaunchDaemon forcing `disablesleep 0` at boot would close the gap; not implemented.
+  `insomnia status` reports `DISABLED with no live watchdog`, and `insomnia off`
+  recovers it in one command, but nothing does so automatically. A LaunchDaemon forcing
+  `disablesleep 0` at boot would close the gap; not implemented.
+
+  State survives reboots too, so the recorded pid may since have been reused by an
+  unrelated process. Both `status` and the kill path verify a pid really is a watchdog
+  (by command-line tag) before trusting or signalling it.
 - **Closing the terminal is fine.** The watchdog ignores SIGHUP, verified both directly
   and against its whole process group, so it outlives the shell that started it.
 - **Orphaned watchdogs.** If a run dies between spawning its watchdog and recording the
