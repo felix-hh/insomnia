@@ -108,7 +108,8 @@ root shell (`sudo -i`): it calls `pmset` directly when it is already root.
   process. Reboot mid-window and sleep stays disabled with nothing left to re-enable it.
   `insomnia status` reports `DISABLED with no live watchdog`, and `insomnia off`
   recovers it in one command, but nothing does so automatically. A LaunchDaemon forcing
-  `disablesleep 0` at boot would close the gap; not implemented.
+  `disablesleep 0` at boot would close the gap; left out on purpose, since recovery is
+  one command and a boot-time daemon is a lot of standing machinery for a rare case.
 
   State survives reboots too, so the recorded pid may since have been reused by an
   unrelated process. Both `status` and the kill path verify a pid really is a watchdog
