@@ -1,0 +1,157 @@
+#!/bin/bash
+# insomnia - disable macOS sleep for a bounded window, then re-enable automatically.
+#
+#   insomnia          disable sleep for 60 minutes (default)
+#   insomnia 30       30 minutes - a bare number is minutes
+#   insomnia 4h       4 hours
+#   insomnia 90m      90 minutes
+#   insomnia .5h      30 minutes
+#   insomnia off      re-enable sleep now
+#   insomnia status   show current state and time remaining
+#
+# Re-execs itself under sudo when not root, so `insomnia 4h` and `sudo insomnia 4h`
+# both work; under a root shell (`sudo -i`) it runs directly.
+
+set -euo pipefail
+
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}
+STATE=$STATE_DIR/insomnia.state
+WATCHDOG_TAG=insomnia-watchdog
+PMSET=/usr/bin/pmset
+MIN_SECONDS=60
+MAX_SECONDS=$((24 * 3600))
+
+usage() {
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+now() { date +%s; }
+
+# Print a duration as 45m / 4h00m.
+fmt_duration() {
+  local secs=$1
+  if ((secs < 3600)); then
+    printf '%dm' $(((secs + 59) / 60))
+  else
+    printf '%dh%02dm' $((secs / 3600)) $(((secs % 3600) / 60))
+  fi
+}
+
+# "30" -> minutes, "4h" -> hours, "90m" -> minutes, "45s" -> seconds.
+# Prints seconds on stdout; exits 2 on a malformed argument.
+parse_duration() {
+  local arg=$1 num unit secs
+  num=${arg%[hHmMsS]}
+  unit=${arg#"$num"}
+  if ! [[ "$num" =~ ^([0-9]+(\.[0-9]*)?|\.[0-9]+)$ ]]; then
+    echo "insomnia: expected a duration like 30, 90m, 4h, 'off' or 'status'; got '$arg'" >&2
+    exit 2
+  fi
+  case "${unit:-m}" in
+    h|H) secs=$(awk -v n="$num" 'BEGIN { printf "%d", n * 3600 }') ;;
+    m|M) secs=$(awk -v n="$num" 'BEGIN { printf "%d", n * 60 }') ;;
+    s|S) secs=$(awk -v n="$num" 'BEGIN { printf "%d", n }') ;;
+  esac
+  if ((secs < MIN_SECONDS)); then
+    echo "insomnia: '$arg' is under the 1 minute minimum" >&2
+    exit 2
+  fi
+  if ((secs > MAX_SECONDS)); then
+    echo "insomnia: '$arg' is $(fmt_duration "$secs"), over the 24h maximum" >&2
+    exit 2
+  fi
+  echo "$secs"
+}
+
+status() {
+  local disabled
+  disabled=$($PMSET -g | awk '/SleepDisabled/ {print $2}')
+  if [[ "$disabled" != "1" ]]; then
+    echo "sleep: enabled (normal)"
+    return 0
+  fi
+  if [[ -s "$STATE" ]]; then
+    local pid deadline left
+    read -r pid deadline < "$STATE" || true
+    left=$((deadline - $(now)))
+    if kill -0 "$pid" 2>/dev/null && ((left > 0)); then
+      echo "sleep: DISABLED, $(fmt_duration "$left") left (until $(date -r "$deadline" '+%a %H:%M')), watchdog pid $pid"
+      return 0
+    fi
+  fi
+  echo "sleep: DISABLED with no live watchdog - run 'insomnia off' when done"
+  return 0
+}
+
+kill_watchdog() {
+  if [[ -s "$STATE" ]]; then
+    local pid _rest
+    read -r pid _rest < "$STATE" || true
+    [[ -n "${pid:-}" ]] && kill "$pid" 2>/dev/null || true
+  fi
+  # Also sweep by signature: a watchdog whose state write failed is an orphan that
+  # the recorded pid cannot reach, and it would re-enable sleep at its own deadline.
+  pkill -f "$WATCHDOG_TAG" 2>/dev/null || true
+  rm -f "$STATE"
+}
+
+arg=${1:-60}
+secs=0
+case "$arg" in
+  -h|--help|help) usage; exit 0 ;;
+  status|-s) status; exit 0 ;;
+  off|stop|0) ;;
+  --seconds) parse_duration "${2:-60}"; exit 0 ;;  # testing hook: print parsed seconds
+  *) secs=$(parse_duration "$arg") ;;
+esac
+
+# Everything below changes power settings and needs root. Only the two pmset calls
+# are elevated, via the NOPASSWD rule in /etc/sudoers.d/insomnia; see README.
+if [[ $EUID -eq 0 ]]; then
+  SET_SLEEP=("$PMSET" -a disablesleep)
+else
+  SET_SLEEP=(sudo -n "$PMSET" -a disablesleep)
+fi
+
+case "$arg" in
+  off|stop|0)
+    kill_watchdog
+    "${SET_SLEEP[@]}" 0
+    echo "sleep re-enabled"
+    exit 0
+    ;;
+esac
+
+# Preflight both halves of the exit path before disabling anything, since every
+# failure after this point leaves sleep disabled with nothing to turn it back on.
+if ! mkdir -p "$STATE_DIR" 2>/dev/null || ! touch "$STATE" 2>/dev/null; then
+  echo "insomnia: cannot write $STATE, so refusing to disable sleep." >&2
+  exit 1
+fi
+if ! "${SET_SLEEP[@]}" 0; then
+  echo "insomnia: cannot re-enable sleep without a password, so refusing to disable it." >&2
+  echo "insomnia: check /etc/sudoers.d/insomnia (see README), or run from a root shell." >&2
+  exit 1
+fi
+
+kill_watchdog
+"${SET_SLEEP[@]}" 1
+
+deadline=$(($(now) + secs))
+
+# Watchdog: poll against a wall-clock deadline rather than one long sleep, so a
+# suspended/resumed process or a clock jump cannot stretch the window.
+nohup bash -c '
+  : "$0"  # command-line tag, so orphans are killable by signature
+  deadline=$1; state=$2; shift 2
+  while (( $(date +%s) < deadline )); do sleep 30; done
+  "$@" 0
+  rm -f "$state"
+' "$WATCHDOG_TAG" "$deadline" "$STATE" "${SET_SLEEP[@]}" >/dev/null 2>&1 &
+watchdog=$!
+disown 2>/dev/null || true
+
+printf '%s %s\n' "$watchdog" "$deadline" > "$STATE"
+
+echo "sleep disabled for $(fmt_duration "$secs"), until $(date -r "$deadline" '+%a %H:%M') (watchdog pid $watchdog)"
+echo "cancel early with: insomnia off"

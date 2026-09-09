@@ -1,0 +1,6 @@
+# Installed as /etc/sudoers.d/insomnia (root:wheel, mode 440) by install.sh, which
+# substitutes the installing user for __USER__.
+#
+# Lets insomnia toggle sleep without a password prompt. Scoped to the two exact
+# commands it runs: no wildcards, and every other pmset invocation still prompts.
+__USER__ ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1
