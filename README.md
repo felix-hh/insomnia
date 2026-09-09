@@ -9,8 +9,8 @@ laptop out of a closed bag. `insomnia` sets a deadline up front and re-enables s
 when it expires, whether or not you remember.
 
 ```console
-$ insomnia 90m
-sleep disabled for 90m, until Tue 20:26 (watchdog pid 41337)
+$ insomnia
+sleep disabled for 1h00m, until Tue 20:08 (watchdog pid 98605)
 cancel early with: insomnia off
 ```
 
