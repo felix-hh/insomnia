@@ -108,6 +108,8 @@ root shell (`sudo -i`): it calls `pmset` directly when it is already root.
   process. Reboot mid-window and sleep stays disabled with nothing left to re-enable it.
   `insomnia status` reports `DISABLED with no live watchdog` when it sees this. A
   LaunchDaemon forcing `disablesleep 0` at boot would close the gap; not implemented.
+- **Closing the terminal is fine.** The watchdog ignores SIGHUP, verified both directly
+  and against its whole process group, so it outlives the shell that started it.
 - **Orphaned watchdogs.** If a run dies between spawning its watchdog and recording the
   pid, only the signature sweep (`pkill -f insomnia-watchdog`) can reach it. The
   preflight makes that window small, not zero.
